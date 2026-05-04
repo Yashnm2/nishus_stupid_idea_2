@@ -25,7 +25,11 @@ def _overlaps(start: datetime, end: datetime, plan: Plan, ignore_id: str | None 
 
 
 def _valid_window(start: datetime, end: datetime, plan: Plan) -> bool:
-    return start.time() >= _earliest(plan) and end.time() <= _quiet_start(plan)
+    if end.date() != start.date():
+        return False
+    earliest = datetime.combine(start.date(), _earliest(plan))
+    quiet_start = datetime.combine(start.date(), _quiet_start(plan))
+    return start >= earliest and end <= quiet_start
 
 
 def nearest_valid_slot(
@@ -54,7 +58,8 @@ def generate_plan(classes: list[ClassSession]) -> Plan:
     plan = Plan(classes=classes)
     for item in sorted(classes, key=lambda cls: cls.start):
         desired = item.end + timedelta(minutes=plan.preferences.study_delay_minutes)
-        if (desired + timedelta(minutes=plan.preferences.default_duration_minutes)).time() > _quiet_start(plan):
+        desired_end = desired + timedelta(minutes=plan.preferences.default_duration_minutes)
+        if not _valid_window(desired, desired_end, plan):
             desired = datetime.combine(item.start.date() + timedelta(days=1), _earliest(plan))
         start, end, _ = nearest_valid_slot(desired, plan.preferences.default_duration_minutes, plan)
         plan.study_sessions.append(
@@ -164,4 +169,3 @@ def apply_command(plan: Plan, command: ChatCommand) -> tuple[Plan, str, list[str
     plan.last_updated = datetime.now()
     plan.messages.append(reply)
     return plan, reply, sorted(set(warnings))
-

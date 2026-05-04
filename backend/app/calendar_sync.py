@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from datetime import timezone
 from urllib.parse import urlencode
 
 import httpx
@@ -30,12 +29,30 @@ PROVIDERS = {
 }
 
 
+def _backend_base_url() -> str:
+    base_url = os.environ.get("BACKEND_BASE_URL") or os.environ.get("API_BASE_URL")
+    if not base_url:
+        return "http://localhost:8001"
+    base_url = base_url.rstrip("/")
+    if base_url.endswith("/api"):
+        base_url = base_url[:-4]
+    return base_url
+
+
+def _default_redirect_uri(provider: str) -> str:
+    return f"{_backend_base_url()}/api/calendar/{provider}/callback"
+
+
+def _google_time_zone() -> str:
+    return os.environ.get("GOOGLE_CALENDAR_TIME_ZONE") or os.environ.get("APP_TIME_ZONE") or "Asia/Singapore"
+
+
 def _config(provider: str) -> dict:
     spec = PROVIDERS[provider]
     return {
         "client_id": os.environ.get(spec["client_id"]),
         "client_secret": os.environ.get(spec["client_secret"]),
-        "redirect_uri": os.environ.get(spec["redirect_uri"], f"http://localhost:8000/api/calendar/{provider}/callback"),
+        "redirect_uri": os.environ.get(spec["redirect_uri"], _default_redirect_uri(provider)),
         "scope": spec["scope"],
         "auth": spec["auth"],
         "token": spec["token"],
@@ -86,11 +103,12 @@ async def exchange_code(provider: str, code: str) -> None:
 
 
 def _event_payload(session: StudySession) -> dict:
+    time_zone = _google_time_zone()
     return {
         "summary": f"Study: {session.module}",
         "description": "Adaptive study session",
-        "start": {"dateTime": session.start.isoformat(), "timeZone": str(session.start.astimezone().tzinfo)},
-        "end": {"dateTime": session.end.isoformat(), "timeZone": str(session.end.astimezone().tzinfo)},
+        "start": {"dateTime": session.start.isoformat(), "timeZone": time_zone},
+        "end": {"dateTime": session.end.isoformat(), "timeZone": time_zone},
     }
 
 
@@ -136,4 +154,3 @@ async def sync_plan(provider: str, plan: Plan) -> tuple[Plan, str]:
             if not existing_id and data.get("id"):
                 session.calendar_event_ids[provider] = data["id"]
     return plan, f"Synced {len(plan.study_sessions)} session(s) to {provider.title()}."
-
