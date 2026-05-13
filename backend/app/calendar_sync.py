@@ -9,6 +9,9 @@ from .models import CalendarStatus, Plan, StudySession
 from .storage import load_token, save_token
 
 
+GOOGLE_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+OUTLOOK_EVENTS_URL = "https://graph.microsoft.com/v1.0/me/events"
+
 PROVIDERS = {
     "google": {
         "auth": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -59,7 +62,13 @@ def _config(provider: str) -> dict:
     }
 
 
+def ensure_provider(provider: str) -> None:
+    if provider not in PROVIDERS:
+        raise ValueError("Unknown calendar provider.")
+
+
 def status(provider: str) -> CalendarStatus:
+    ensure_provider(provider)
     cfg = _config(provider)
     configured = bool(cfg["client_id"] and cfg["client_secret"])
     connected = load_token(provider) is not None
@@ -73,9 +82,13 @@ def status(provider: str) -> CalendarStatus:
 
 
 def auth_url(provider: str) -> str:
+    ensure_provider(provider)
     cfg = _config(provider)
     if not cfg["client_id"]:
         raise ValueError(f"{provider.title()} client ID is not configured.")
+
+    # Google and Microsoft both accept these OAuth query fields for this MVP.
+    # Extra provider-specific behavior is kept in PROVIDERS above.
     params = {
         "client_id": cfg["client_id"],
         "redirect_uri": cfg["redirect_uri"],
@@ -88,6 +101,7 @@ def auth_url(provider: str) -> str:
 
 
 async def exchange_code(provider: str, code: str) -> None:
+    ensure_provider(provider)
     cfg = _config(provider)
     payload = {
         "client_id": cfg["client_id"],
@@ -121,7 +135,17 @@ def _graph_payload(session: StudySession) -> dict:
     }
 
 
+def _calendar_request(provider: str, session: StudySession, existing_id: str | None) -> tuple[str, dict]:
+    if provider == "google":
+        url = f"{GOOGLE_EVENTS_URL}/{existing_id}" if existing_id else GOOGLE_EVENTS_URL
+        return url, _event_payload(session)
+
+    url = f"{OUTLOOK_EVENTS_URL}/{existing_id}" if existing_id else OUTLOOK_EVENTS_URL
+    return url, _graph_payload(session)
+
+
 async def sync_plan(provider: str, plan: Plan) -> tuple[Plan, str]:
+    ensure_provider(provider)
     token = load_token(provider)
     if token is None:
         raise ValueError(f"{provider.title()} is not connected.")
@@ -133,22 +157,11 @@ async def sync_plan(provider: str, plan: Plan) -> tuple[Plan, str]:
         for session in plan.study_sessions:
             existing_id = session.calendar_event_ids.get(provider)
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-            if provider == "google":
-                body = _event_payload(session)
-                if existing_id:
-                    url = f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{existing_id}"
-                    response = await client.patch(url, headers=headers, json=body)
-                else:
-                    url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-                    response = await client.post(url, headers=headers, json=body)
+            url, body = _calendar_request(provider, session, existing_id)
+            if existing_id:
+                response = await client.patch(url, headers=headers, json=body)
             else:
-                body = _graph_payload(session)
-                if existing_id:
-                    url = f"https://graph.microsoft.com/v1.0/me/events/{existing_id}"
-                    response = await client.patch(url, headers=headers, json=body)
-                else:
-                    url = "https://graph.microsoft.com/v1.0/me/events"
-                    response = await client.post(url, headers=headers, json=body)
+                response = await client.post(url, headers=headers, json=body)
             response.raise_for_status()
             data = response.json() if response.content else {}
             if not existing_id and data.get("id"):

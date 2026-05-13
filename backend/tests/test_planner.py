@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from app.importers import parse_entry
 from app.models import ChatCommand, CommandType
 from app.planner import apply_command, generate_plan

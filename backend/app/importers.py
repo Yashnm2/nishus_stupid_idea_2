@@ -33,13 +33,14 @@ DAYS = {
 
 ROW_RE = re.compile(
     r"(?P<day>mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)"
-    r"[\s,]+(?P<start>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|–|to)\s*"
+    r"[\s,]+(?P<start>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|\u2013|\u2014|to)\s*"
     r"(?P<end>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?P<module>.+)",
     re.IGNORECASE,
 )
 
 
 def week_start(today: date | None = None) -> date:
+    """Return Monday of the current week, used as the imported timetable week."""
     today = today or date.today()
     return today - timedelta(days=today.weekday())
 
@@ -67,13 +68,15 @@ def parse_entry(row: str, source: str) -> ClassSession | None:
     class_date = week_start() + timedelta(days=day_index)
     start = datetime.combine(class_date, start_time)
     end = datetime.combine(class_date, end_time)
+
+    # Rows such as "9pm-1am" are treated as overnight classes.
     if end <= start:
         end += timedelta(hours=12)
     module = match.group("module").strip(" -")
     return ClassSession(day=class_date.strftime("%A"), start=start, end=end, module=module, source=source)
 
 
-def _sessions_from_rows(rows: list[str], source: str) -> list[ClassSession]:
+def _parse_rows(rows: list[str], source: str) -> list[ClassSession]:
     sessions = []
     for row in rows:
         session = parse_entry(row, source)
@@ -87,7 +90,7 @@ def parse_csv(data: bytes, filename: str) -> list[ClassSession]:
     rows = []
     for row in csv.reader(StringIO(text)):
         rows.append(" ".join(cell for cell in row if cell))
-    return _sessions_from_rows(rows, filename)
+    return _parse_rows(rows, filename)
 
 
 def parse_xlsx(data: bytes, filename: str) -> list[ClassSession]:
@@ -96,7 +99,7 @@ def parse_xlsx(data: bytes, filename: str) -> list[ClassSession]:
     for sheet in workbook.worksheets:
         for values in sheet.iter_rows(values_only=True):
             rows.append(" ".join(str(value) for value in values if value is not None))
-    return _sessions_from_rows(rows, filename)
+    return _parse_rows(rows, filename)
 
 
 def parse_pdf(data: bytes, filename: str) -> list[ClassSession]:
@@ -104,7 +107,7 @@ def parse_pdf(data: bytes, filename: str) -> list[ClassSession]:
     rows = []
     for page in reader.pages:
         rows.extend((page.extract_text() or "").splitlines())
-    return _sessions_from_rows(rows, filename)
+    return _parse_rows(rows, filename)
 
 
 def parse_ods(data: bytes, filename: str) -> list[ClassSession]:
@@ -117,7 +120,7 @@ def parse_ods(data: bytes, filename: str) -> list[ClassSession]:
             values = [node.text.strip() for node in row.iter() if node.text and node.text.strip()]
             if values:
                 rows.append(" ".join(values))
-    return _sessions_from_rows(rows, filename)
+    return _parse_rows(rows, filename)
 
 
 def parse_timetable(filename: str, data: bytes) -> list[ClassSession]:

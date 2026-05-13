@@ -12,6 +12,7 @@ def app_data_dir() -> Path:
     if base:
         root = Path(base)
     else:
+        # Keep generated plans and OAuth tokens out of the submitted repository.
         root = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share"))
         root = root / "AdaptiveStudyPlanner"
     root.mkdir(parents=True, exist_ok=True)
@@ -54,4 +55,3 @@ def load_token(provider: str) -> dict | None:
 def save_token(provider: str, token: dict) -> None:
     path = token_path(provider)
     path.write_text(json.dumps(token, indent=2), encoding="utf-8")
-

@@ -9,41 +9,9 @@ import {
   RefreshCcw,
   Send,
 } from "lucide-react";
+import { API, getCalendarAuthUrl, loadDashboard, sendChatMessage, syncCalendar, uploadTimetable } from "./api";
+import { formatDateTime, groupByDay, minutes } from "./formatting";
 import "./styles.css";
-
-const API = import.meta.env.VITE_API_BASE_URL || "http://localhost:8001/api";
-
-async function parseApiError(response) {
-  try {
-    const data = await response.json();
-    return data.detail || data.message || response.statusText;
-  } catch {
-    return response.statusText || "Request failed";
-  }
-}
-
-function formatDateTime(value) {
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    month: "short",
-    day: "numeric",
-  }).format(new Date(value));
-}
-
-function minutes(start, end) {
-  return Math.round((new Date(end) - new Date(start)) / 60000);
-}
-
-function groupByDay(sessions) {
-  return sessions.reduce((days, session) => {
-    const day = new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(new Date(session.start));
-    days[day] = days[day] || [];
-    days[day].push(session);
-    return days;
-  }, {});
-}
 
 function StatusPill({ children, tone = "neutral" }) {
   return <span className={`pill pill-${tone}`}>{children}</span>;
@@ -60,11 +28,9 @@ function App() {
   const days = useMemo(() => groupByDay(plan?.study_sessions || []), [plan]);
 
   async function load() {
-    const [planRes, statusRes] = await Promise.all([fetch(`${API}/plan`), fetch(`${API}/calendar/status`)]);
-    if (!planRes.ok) throw new Error(await parseApiError(planRes));
-    if (!statusRes.ok) throw new Error(await parseApiError(statusRes));
-    setPlan(await planRes.json());
-    setCalendarStatus(await statusRes.json());
+    const data = await loadDashboard();
+    setPlan(data.plan);
+    setCalendarStatus(data.calendarStatus);
   }
 
   useEffect(() => {
@@ -75,12 +41,8 @@ function App() {
     if (!file) return;
     setBusy(true);
     setError("");
-    const body = new FormData();
-    body.append("file", file);
     try {
-      const response = await fetch(`${API}/upload`, { method: "POST", body });
-      if (!response.ok) throw new Error(await parseApiError(response));
-      setPlan(await response.json());
+      setPlan(await uploadTimetable(file));
       setLog([{ role: "system", text: `Imported ${file.name} and generated a study plan.` }]);
     } catch (err) {
       setError(err.message);
@@ -98,13 +60,7 @@ function App() {
     setError("");
     setLog((items) => [...items, { role: "user", text: userText }]);
     try {
-      const response = await fetch(`${API}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userText }),
-      });
-      if (!response.ok) throw new Error(await parseApiError(response));
-      const data = await response.json();
+      const data = await sendChatMessage(userText);
       setPlan(data.plan);
       setLog((items) => [
         ...items,
@@ -120,10 +76,7 @@ function App() {
   async function connect(provider) {
     setError("");
     try {
-      const response = await fetch(`${API}/calendar/${provider}/auth-url`);
-      if (!response.ok) throw new Error(await parseApiError(response));
-      const { url } = await response.json();
-      window.location.href = url;
+      window.location.href = await getCalendarAuthUrl(provider);
     } catch (err) {
       setError(err.message);
     }
@@ -133,9 +86,7 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${API}/calendar/${provider}/sync`, { method: "POST" });
-      if (!response.ok) throw new Error(await parseApiError(response));
-      const data = await response.json();
+      const data = await syncCalendar(provider);
       setPlan(data.plan);
       setLog((items) => [...items, { role: "system", text: data.message }]);
       await load();
@@ -221,13 +172,13 @@ function App() {
             </StatusPill>
           </div>
           {Object.keys(days).length === 0 ? (
-            <div className="empty">Upload a timetable with rows like “Monday 09:00-11:00 Engineering Mathematics”.</div>
+            <div className="empty">Upload a timetable with rows like "Monday 09:00-11:00 Engineering Mathematics".</div>
           ) : (
             <div className="day-grid">
               {Object.entries(days).map(([day, sessions]) => (
                 <div className="day-column" key={day}>
                   <h3>{day}</h3>
-                  {sessions
+                  {[...sessions]
                     .sort((a, b) => new Date(a.start) - new Date(b.start))
                     .map((session) => (
                       <article className="session" key={session.id}>
@@ -255,7 +206,7 @@ function App() {
             {log.length === 0 ? (
               <div className="chat-empty">
                 <MessageSquareText size={22} />
-                <span>Try “Move math to Friday” or “I am behind on physics”.</span>
+                <span>Try "Move math to Friday" or "I am behind on physics".</span>
               </div>
             ) : (
               log.map((item, index) => (

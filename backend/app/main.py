@@ -1,24 +1,22 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 
 from . import calendar_sync
-from .chatbot import parse_command
 from .ics import write_ics
-from .importers import parse_timetable
 from .models import ChatRequest, ChatResponse
-from .planner import apply_command, generate_plan
-from .storage import ics_path, load_plan, save_plan
+from .services import create_plan_from_timetable, handle_chat_message, save_plan_and_calendar
+from .storage import ics_path, load_plan
 
 
 load_dotenv()
 
 app = FastAPI(title="Adaptive Student Study Planner")
+
+# The frontend is usually served by Vite on a local port during demos.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[],
@@ -29,13 +27,14 @@ app.add_middleware(
 )
 
 
-def persist(plan):
-    plan.last_updated = datetime.now()
-    save_plan(plan)
-    write_ics(plan)
-    return plan
+def ensure_calendar_provider(provider: str) -> None:
+    try:
+        calendar_sync.ensure_provider(provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+# Plan and timetable endpoints
 @app.get("/api/plan")
 def get_plan():
     return load_plan()
@@ -44,23 +43,15 @@ def get_plan():
 @app.post("/api/upload")
 async def upload_timetable(file: UploadFile = File(...)):
     try:
-        classes = parse_timetable(file.filename or "upload", await file.read())
-        if not classes:
-            raise ValueError("No timetable rows matched patterns like 'Monday 09:00-11:00 Engineering Mathematics'.")
-        plan = generate_plan(classes)
-        return persist(plan)
+        return create_plan_from_timetable(file.filename or "upload", await file.read())
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    plan = load_plan()
     try:
-        command = await parse_command(request.message)
-        plan, reply, warnings = apply_command(plan, command)
-        persist(plan)
-        return ChatResponse(plan=plan, reply=reply, command=command, warnings=warnings)
+        return await handle_chat_message(request.message)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -72,6 +63,7 @@ def export_ics():
     return FileResponse(ics_path(), media_type="text/calendar", filename="study_plan.ics")
 
 
+# Optional calendar sync endpoints
 @app.get("/api/calendar/status")
 def calendar_status():
     return [calendar_sync.status("google"), calendar_sync.status("outlook")]
@@ -79,8 +71,7 @@ def calendar_status():
 
 @app.get("/api/calendar/{provider}/auth-url")
 def calendar_auth_url(provider: str):
-    if provider not in calendar_sync.PROVIDERS:
-        raise HTTPException(status_code=404, detail="Unknown calendar provider.")
+    ensure_calendar_provider(provider)
     try:
         return {"url": calendar_sync.auth_url(provider)}
     except Exception as exc:
@@ -89,8 +80,7 @@ def calendar_auth_url(provider: str):
 
 @app.get("/api/calendar/{provider}/callback")
 async def calendar_callback(provider: str, code: str):
-    if provider not in calendar_sync.PROVIDERS:
-        raise HTTPException(status_code=404, detail="Unknown calendar provider.")
+    ensure_calendar_provider(provider)
     try:
         await calendar_sync.exchange_code(provider, code)
         return HTMLResponse("<p>Calendar connected. You can return to the study planner.</p>")
@@ -100,11 +90,10 @@ async def calendar_callback(provider: str, code: str):
 
 @app.post("/api/calendar/{provider}/sync")
 async def sync_calendar(provider: str):
-    if provider not in calendar_sync.PROVIDERS:
-        raise HTTPException(status_code=404, detail="Unknown calendar provider.")
+    ensure_calendar_provider(provider)
     try:
         plan, message = await calendar_sync.sync_plan(provider, load_plan())
-        persist(plan)
+        save_plan_and_calendar(plan)
         return {"message": message, "plan": plan}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
